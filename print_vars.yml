@@ -1,4 +1,4 @@
-- hosts: all
+- hosts: localhost
   tasks:
   - name: print vars
     debug: var=vars
