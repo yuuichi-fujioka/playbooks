@@ -1,0 +1,144 @@
+- name: check vars
+  hosts: all
+  tasks:
+  - name: dplane_address is required
+    fail: msg="dplane_address is required"
+    when: dplane_address is not defined
+
+  - name: k8s_api is required
+    fail: msg="k8s_api is required"
+    when: k8s_api is not defined
+
+- name: setup prerequires
+  hosts: all
+  vars:
+    version: 1.13.2-00
+  tasks:
+  - name: install python-apt
+    pip:
+      name: python-apt
+      state: present
+    become: yes
+
+  - name: add kubernetes apt repo key
+    apt_key:
+      url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+      state: present
+    become: yes
+
+  - name: add kubernetes apt repo
+    apt_repository:
+      repo: deb https://apt.kubernetes.io/ kubernetes-xenial main
+      filename: kubernetes
+      state: present
+    become: yes
+
+  - name: install kubelet,kubeadm
+    apt:
+      name: "{{item}}={{version}}"
+      state: present
+      update_cache: yes
+    become: yes
+    loop:
+    - kubelet
+    - kubeadm
+
+  - name: set  net.bridge.bridge-nf-call-iptables
+    sysctl:
+        name: net.bridge.bridge-nf-call-iptables
+        value: 1
+        state: present
+        reload: yes
+        sysctl_set: yes
+    become: yes
+
+  - name: set kubelet extra args
+    template:
+      dest: /etc/default/kubelet
+      src: etc/default/kubelet
+    become: yes
+    notify: restart kubelet
+
+  handlers:
+  - name: restart kubelet
+    listen:
+        - restart kubelet
+    systemd:
+        name: kubelet
+        daemon_reload: yes
+        state: restarted
+    become: yes
+
+- name: install k8s
+  hosts: all
+  vars:
+      k8s_version: stable-1.13
+  tasks:
+  - name: kubeadm init
+    shell: kubeadm init --service-cidr=10.112.0.0/12 --pod-network-cidr=10.30.0.0/16 --kubernetes-version {{k8s_version}} --apiserver-advertise-address {{dplane_address}} --apiserver-cert-extra-sans {{k8s_api}} --ignore-preflight-errors Swap
+    become: yes
+    args:
+        creates: /etc/kubernetes/admin.conf
+
+- name: install calico
+  hosts: all
+  vars:
+    version: 1.13.2-00
+  tasks:
+  - name: download calico.yml
+    get_url:
+        url: https://docs.projectcalico.org/v3.1/getting-started/kubernetes/installation/hosted/kubernetes-datastore/calico-networking/1.7/calico.yaml
+        dest: /tmp/calico.yaml
+
+  - name: download rbac-kdd.yml
+    get_url:
+        url:  https://docs.projectcalico.org/v3.1/getting-started/kubernetes/installation/hosted/rbac-kdd.yaml
+        dest: /tmp/rbac-kdd.yaml
+
+  - name: replace ip address
+    replace:
+        regexp: "192.168.0.0/16"
+        replace: "10.30.0.0/16"
+        path: /tmp/calico.yaml
+
+  - name: install openshift client for k8s
+    pip:
+      name: openshift
+      state: present
+    become: yes
+
+  - name: mkdir .kube
+    file:
+        path: "{{ansible_user_dir}}/.kube"
+        state: directory
+
+  - name: copy .kube/config
+    copy:
+        remote_src: yes
+        src: /etc/kubernetes/admin.conf
+        dest: "{{ansible_user_dir}}/.kube/config"
+        owner: "{{ansible_user_uid}}"
+        group: "{{ansible_user_gid}}"
+    become: yes
+
+  - name: apply calico
+    k8s:
+      src: "{{item}}"
+      state: present
+    loop:
+    - /tmp/rbac-kdd.yaml
+    - /tmp/calico.yaml
+
+  - name: install kubectl
+    apt:
+      name: "kubectl={{version}}"
+      state: present
+      update_cache: yes
+    become: yes
+
+- name: master as worker
+  hosts: all
+  tasks:
+  - name: master to be as non master
+    shell: kubectl taint nodes --all node-role.kubernetes.io/master-
+

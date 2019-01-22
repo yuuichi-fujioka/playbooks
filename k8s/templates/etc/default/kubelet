@@ -1,0 +1,2 @@
+KUBELET_EXTRA_ARGS=--node-ip={{dplane_address}}  --fail-swap-on=false
+
