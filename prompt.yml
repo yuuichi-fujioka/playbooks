@@ -1,0 +1,6 @@
+- hosts: localhost
+  vars_prompt:
+  - name: foo
+    private: no
+  tasks:
+  - debug: var=foo
